@@ -97,8 +97,44 @@ else()
   include(OpenSeesFunctions)
   set(NOT_USING_CONAN TRUE)
   set (CONAN_LIBS )
-  find_package(HDF5 REQUIRED)
-  find_package(TCL REQUIRED)
+
+  # ---------- HDF5 可选 ----------
+  option(USE_HDF5 "Enable HDF5 support" OFF)
+  set(HDF5_FOUND FALSE)
+  if(USE_HDF5)
+      find_package(HDF5 QUIET)
+  endif()
+
+  # ---------- Tcl 自动查找（含 Conda） ----------
+  find_package(TCL QUIET)
+  if(NOT TCL_FOUND)
+      message(STATUS "TCL was not found by CMake.")
+      if(DEFINED ENV{CONDA_PREFIX})
+          set(_CONDA $ENV{CONDA_PREFIX})
+          if(EXISTS "${_CONDA}/include/tcl.h")
+              set(TCL_INCLUDE_PATH "${_CONDA}/include")
+          elseif(EXISTS "${_CONDA}/include/tcl8.6/tcl.h")
+              set(TCL_INCLUDE_PATH "${_CONDA}/include/tcl8.6")
+          endif()
+          if(EXISTS "${_CONDA}/lib/libtcl8.6.so")
+              set(TCL_LIBRARY "${_CONDA}/lib/libtcl8.6.so")
+          elseif(EXISTS "${_CONDA}/lib/libtcl.so")
+              set(TCL_LIBRARY "${_CONDA}/lib/libtcl.so")
+          endif()
+          if(TCL_INCLUDE_PATH AND TCL_LIBRARY)
+              set(TCL_FOUND TRUE)
+              set(TCL_LIBRARIES ${TCL_LIBRARY})
+              message(STATUS "Using Tcl from Conda")
+          endif()
+      endif()
+  endif()
+  if(NOT TCL_FOUND)
+      message(FATAL_ERROR "Cannot find Tcl.")
+  endif()
+  # 兼容旧版 FindTCL.cmake 可能设置 TCL_LIBRARY 而非 TCL_LIBRARIES
+  if(TCL_LIBRARY AND NOT TCL_LIBRARIES)
+      set(TCL_LIBRARIES ${TCL_LIBRARY})
+  endif()
 
 endif()
 
@@ -281,9 +317,9 @@ endif()
 
 find_package (Python COMPONENTS Interpreter Development)
 
-
-find_package(MPI)
-find_package(MKL)
+# ---------- 修改：MPI 和 MKL 使用 QUIET ----------
+find_package(MPI QUIET)
+find_package(MKL QUIET)
 
 #set (LAPACK_FOUND FALSE)
 #set (BLAS_FOUND FALSE)
@@ -378,7 +414,8 @@ target_link_libraries(OPS_Numerics INTERFACE
        ${LAPACK_LIBRARIES}
 )
 
-set(TCL_LIBRARIES ${TCL_LIBRARY})
+# ---------- 删除多余 set(TCL_LIBRARIES ${TCL_LIBRARY})，避免覆盖 ----------
+# 原句：set(TCL_LIBRARIES ${TCL_LIBRARY})  已移除，因为前面已妥善处理
 
 #
 # OpenSees OBJECT LIBRARIES
@@ -523,25 +560,27 @@ add_executable(OpenSees EXCLUDE_FROM_ALL
   ${OPS_SRC_DIR}/actor/objectBroker/FEM_ObjectBrokerAllClasses.cpp
 )
 
-if(NOT EXISTS "${CMAKE_BINARY_DIR}/conanbuildinfo.cmake")
-  target_include_directories(OpenSees PUBLIC ${TCL_INCLUDE_PATH})
-
-  FILE(COPY ${CONAN_LIB_DIRS_TCL}/tcl8.6
-       DESTINATION ${PROJECT_BINARY_DIR}/lib/tcl8.6
-       FILES_MATCHING PATTERN .tcl)
-     
-else ()
-     FILE(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lib/tcl8.6)
-     add_custom_command(
-      TARGET OpenSees POST_BUILD
-  COMMENT("Copying init.tcl to ${CMAKE_CURRENT_BINARY_DIR}")
-      COMMAND ${CMAKE_COMMAND} -E copy
-        ${CONAN_LIB_DIRS_TCL}/tcl8.6/init.tcl
-  ${CMAKE_CURRENT_BINARY_DIR}/lib/tcl8.6
-     )
+# ---------- Tcl 文件复制逻辑（仅 Conan） ----------
+if(EXISTS "${CMAKE_BINARY_DIR}/conanbuildinfo.cmake")
+    # Conan: 复制 init.tcl
+    FILE(MAKE_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/lib/tcl8.6)
+    add_custom_command(
+        TARGET OpenSees POST_BUILD
+        COMMENT "Copying init.tcl to ${CMAKE_CURRENT_BINARY_DIR}/lib/tcl8.6"
+        COMMAND ${CMAKE_COMMAND} -E copy
+            ${CONAN_LIB_DIRS_TCL}/tcl8.6/init.tcl
+            ${CMAKE_CURRENT_BINARY_DIR}/lib/tcl8.6
+    )
+else()
+    # Non-Conan: 不复制，但传递 TCL_LIBRARY 路径（若已定义）以便运行时定位 init.tcl
+    target_include_directories(OpenSees PUBLIC ${TCL_INCLUDE_PATH})
+    if(TCL_LIBRARY)
+        target_compile_definitions(OpenSees PRIVATE TCL_LIBRARY="${TCL_LIBRARY}")
+    endif()
 endif()
 
-
+# ---------- HDF5 条件链接 ----------
+if(HDF5_FOUND)
 target_link_libraries(OpenSees
   OPS_InterpTcl 
   coordTransformation
@@ -554,6 +593,19 @@ target_link_libraries(OpenSees
   ${HDF5_LIBRARIES} 
   ${CONAN_LIBS}
 )
+else()
+target_link_libraries(OpenSees
+  OPS_InterpTcl 
+  coordTransformation
+  OpenSeesLIB
+  OPS_Reliability
+  OPS_ReliabilityTcl  
+  OPS_Numerics
+  OPS_Recorder
+  ${CMAKE_DL_LIBS} 
+  ${CONAN_LIBS}
+)
+endif()
 
 
 #
@@ -597,6 +649,7 @@ if(MPI_FOUND)
         PUBLIC _PARALLEL_PROCESSING ${MUMPS_FLAG})
     endif()
 
+    if(HDF5_FOUND)
     target_link_libraries(OpenSeesSP 
        OPS_InterpTcl 
        OpenSeesLIB
@@ -615,6 +668,25 @@ if(MPI_FOUND)
        ${MPI_Fortran_LIBRARIES}       
        ${MPI_CXX_LINK_FLAGS}
     )
+    else()
+    target_link_libraries(OpenSeesSP 
+       OPS_InterpTcl 
+       OpenSeesLIB
+       OPS_Reliability
+       OPS_ReliabilityTcl
+       OPS_Recorder
+       METIS
+       SUPERLU_DIST
+       OPS_Numerics
+       ${MUMPS_LIBRARIES}
+       ${CMAKE_DL_LIBS} 
+       ${CONAN_LIBS}
+       ${MPI_CXX_LIBRARIES}
+       ${SCALAPACK_LIBRARIES}
+       ${MPI_Fortran_LIBRARIES}       
+       ${MPI_CXX_LINK_FLAGS}
+    )
+    endif()
     
 endif()
 
@@ -660,6 +732,7 @@ if(MPI_FOUND)
         PUBLIC _PARALLEL_INTERPRETERS ${MUMPS_FLAG})
     endif()
     
+    if(HDF5_FOUND)
     target_link_libraries(OpenSeesMP 
        OPS_InterpTcl 
        OpenSeesLIB
@@ -678,6 +751,25 @@ if(MPI_FOUND)
        ${MPI_Fortran_LIBRARIES}       
        ${MPI_CXX_LINK_FLAGS}
     )
+    else()
+    target_link_libraries(OpenSeesMP 
+       OPS_InterpTcl 
+       OpenSeesLIB
+       OPS_Reliability
+       OPS_ReliabilityTcl
+       OPS_Recorder      
+       METIS
+       SUPERLU_DIST
+       OPS_Numerics
+       ${MUMPS_LIBRARIES}
+       ${CMAKE_DL_LIBS} 
+       ${CONAN_LIBS}
+       ${MPI_CXX_LIBRARIES}
+       ${SCALAPACK_LIBRARIES}
+       ${MPI_Fortran_LIBRARIES}       
+       ${MPI_CXX_LINK_FLAGS}
+    )
+    endif()
     
 endif()
 
@@ -695,6 +787,7 @@ set_target_properties(OpenSeesPy PROPERTIES PREFIX "")
 
 target_include_directories(OpenSeesPy PUBLIC ${Python_INCLUDE_DIRS})
 
+if(HDF5_FOUND)
 target_link_libraries(OpenSeesPy
    OpenSeesLIB 
    OPS_Reliability
@@ -704,6 +797,16 @@ target_link_libraries(OpenSeesPy
    ${CONAN_LIBS} 
    ${Python_LIBRARIES}
 )
+else()
+target_link_libraries(OpenSeesPy
+   OpenSeesLIB 
+   OPS_Reliability
+   OPS_Recorder
+   OPS_Numerics 
+   ${CONAN_LIBS} 
+   ${Python_LIBRARIES}
+)
+endif()
 
 
 #
@@ -803,16 +906,18 @@ endif()
 # HDF5
 #----------------------------
 
-if(HDF5_FOUND)
-   include_directories(${HDF5_INCLUDE_DIR})
-   set(_hdf5_libs hdf5 hdf5_cpp)
-   if (HDF5_VERSION VERSION_GREATER_EQUAL 1.12.0)
+# ---------- 最终 HDF5 判断 ----------
+if(USE_HDF5 AND HDF5_FOUND)
+
+   include_directories(${HDF5_INCLUDE_DIRS})
+   add_compile_definitions(_HDF5)
+
+   if(HDF5_VERSION VERSION_GREATER_EQUAL 1.12.0)
          add_compile_definitions(_H5DRM)
-         add_compile_definitions(_HDF5)
          message(STATUS "OPS >>> Have HDF5 and VERSION >= 1.12.0")    
    endif()
 else()
-   message(STATUS "OPS >>> Could not find HDF5")
+   message(STATUS "OPS >>> HDF5 not enabled or not found.")
 endif()
 
 
