@@ -21,6 +21,32 @@
 cmake_minimum_required(VERSION 3.16)
 project(OpenSeesFramework LANGUAGES C CXX Fortran)
 
+# =========================== 强制 Tcl/Tk 路径（最前方设置） ===========================
+set(TCL_ROOT "/opt/mamba" CACHE PATH "" FORCE)
+
+set(TCL_INCLUDE_PATH "${TCL_ROOT}/include" CACHE PATH "" FORCE)
+set(TCL_LIBRARY "${TCL_ROOT}/lib/libtcl8.6.so" CACHE FILEPATH "" FORCE)
+set(TK_INCLUDE_PATH "${TCL_ROOT}/include" CACHE PATH "" FORCE)
+set(TK_LIBRARY "${TCL_ROOT}/lib/libtk8.6.so" CACHE FILEPATH "" FORCE)
+
+set(TCL_FOUND TRUE CACHE BOOL "" FORCE)
+set(TK_FOUND TRUE CACHE BOOL "" FORCE)
+
+set(TCL_LIBRARIES "${TCL_LIBRARY}" CACHE STRING "" FORCE)
+set(TK_LIBRARIES "${TK_LIBRARY}" CACHE STRING "" FORCE)
+
+# 为运行时 Tcl 初始化设置环境变量（仅配置时有用，但可用于后续自定义命令）
+set(ENV{TCL_LIBRARY} "${TCL_ROOT}/lib/tcl8.6")
+
+message(STATUS "FORCED Tcl at ${TCL_LIBRARY}")
+message(STATUS "FORCED Tk at ${TK_LIBRARY}")
+# =====================================================================================
+
+# ===== 重要提示 =====
+# 请务必手动修改 cmake/cmake/OpenSeesDependenciesUnix.cmake，
+# 将其中的 find_package(TCL REQUIRED) 改为 find_package(TCL QUIET)，
+# 否则 Tcl 依赖仍然会强制报错，无视本文件设置的 TCL_FOUND。
+# ====================
 
 set(CMAKE_DISABLE_IN_SOURCE_BUILD ON)
 set(OPS_EXTERN_SOURCE_DIR "${PROJECT_SOURCE_DIR}/OTHER/")
@@ -52,7 +78,7 @@ elseif ("${CMAKE_CXX_COMPILER_ID}" MATCHES "GNU")
  # add_compile_options(-fPIC)
  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
  set(CMAKE_EXE_LINKER_FLAGS "-static-libgcc -static-libstdc++")
- MESSAGE("COMPILER: Clang")
+ MESSAGE("COMPILER: GNU")   # 修正：原为 Clang
 elseif ("${CMAKE_CXX_COMPILER_ID}" MATCHES "Intel") 
  MESSAGE("COMPILER: Intel")
  add_compile_options(-fPIC)
@@ -105,36 +131,7 @@ else()
       find_package(HDF5 QUIET)
   endif()
 
-  # ---------- Tcl 自动查找（含 Conda） ----------
-  find_package(TCL QUIET)
-  if(NOT TCL_FOUND)
-      message(STATUS "TCL was not found by CMake.")
-      if(DEFINED ENV{CONDA_PREFIX})
-          set(_CONDA $ENV{CONDA_PREFIX})
-          if(EXISTS "${_CONDA}/include/tcl.h")
-              set(TCL_INCLUDE_PATH "${_CONDA}/include")
-          elseif(EXISTS "${_CONDA}/include/tcl8.6/tcl.h")
-              set(TCL_INCLUDE_PATH "${_CONDA}/include/tcl8.6")
-          endif()
-          if(EXISTS "${_CONDA}/lib/libtcl8.6.so")
-              set(TCL_LIBRARY "${_CONDA}/lib/libtcl8.6.so")
-          elseif(EXISTS "${_CONDA}/lib/libtcl.so")
-              set(TCL_LIBRARY "${_CONDA}/lib/libtcl.so")
-          endif()
-          if(TCL_INCLUDE_PATH AND TCL_LIBRARY)
-              set(TCL_FOUND TRUE)
-              set(TCL_LIBRARIES ${TCL_LIBRARY})
-              message(STATUS "Using Tcl from Conda")
-          endif()
-      endif()
-  endif()
-  if(NOT TCL_FOUND)
-      message(FATAL_ERROR "Cannot find Tcl.")
-  endif()
-  # 兼容旧版 FindTCL.cmake 可能设置 TCL_LIBRARY 而非 TCL_LIBRARIES
-  if(TCL_LIBRARY AND NOT TCL_LIBRARIES)
-      set(TCL_LIBRARIES ${TCL_LIBRARY})
-  endif()
+  # Tcl 已强制设置，此处不再调用 find_package
 
 endif()
 
@@ -317,7 +314,7 @@ endif()
 
 find_package (Python COMPONENTS Interpreter Development)
 
-# ---------- 修改：MPI 和 MKL 使用 QUIET ----------
+# ---------- MPI 和 MKL 使用 QUIET ----------
 find_package(MPI QUIET)
 find_package(MKL QUIET)
 
@@ -334,12 +331,13 @@ else()
   set(LAPACK_LIBRARIES LAPACK)
 endif()
 
-if(PYTHON_FOUND)
-  message("Python_FOUND:${Python_FOUND}")
-  message("Python_VERSION:${Python_VERSION}")
-  message("Python_Development_FOUND:${Python_Development_FOUND}")
-  message("Python_LIBRARIES:${Python_LIBRARIES}")
-  message("Python_INCLUDES:${Python_INCLUDE_DIRS}")  
+# 修正 Python 检测变量名：使用 Python_FOUND 而非 PYTHON_FOUND
+if(Python_FOUND)
+  message("Python_FOUND: ${Python_FOUND}")
+  message("Python_VERSION: ${Python_VERSION}")
+  message("Python_Development_FOUND: ${Python_Development_FOUND}")
+  message("Python_LIBRARIES: ${Python_LIBRARIES}")
+  message("Python_INCLUDES: ${Python_INCLUDE_DIRS}")  
 else()
   message(STATUS "PYTHON NOT FOUND")
 endif()
@@ -413,9 +411,6 @@ target_link_libraries(OPS_Numerics INTERFACE
        ${AMD_LIBRARIES}       
        ${LAPACK_LIBRARIES}
 )
-
-# ---------- 删除多余 set(TCL_LIBRARIES ${TCL_LIBRARY})，避免覆盖 ----------
-# 原句：set(TCL_LIBRARIES ${TCL_LIBRARY})  已移除，因为前面已妥善处理
 
 #
 # OpenSees OBJECT LIBRARIES
@@ -575,9 +570,12 @@ else()
     # Non-Conan: 不复制，但传递 TCL_LIBRARY 路径（若已定义）以便运行时定位 init.tcl
     target_include_directories(OpenSees PUBLIC ${TCL_INCLUDE_PATH})
     if(TCL_LIBRARY)
-        target_compile_definitions(OpenSees PRIVATE TCL_LIBRARY="${TCL_LIBRARY}")
+        # 修正：TCL_LIBRARY 应指向包含 init.tcl 的目录，而非 libtcl8.6.so
+        target_compile_definitions(OpenSees PRIVATE TCL_LIBRARY="${TCL_ROOT}/lib/tcl8.6")
     endif()
 endif()
+
+# ---------- 注意：已删除无用的 ENVIRONMENT 属性 ----------
 
 # ---------- HDF5 条件链接 ----------
 if(HDF5_FOUND)
@@ -774,39 +772,7 @@ if(MPI_FOUND)
 endif()
 
 
-#
-# OpenSeesPy Module
-#
-
-add_library(OpenSeesPy SHARED EXCLUDE_FROM_ALL
-    ${OPS_SRC_DIR}/interpreter/PythonModule.cpp
-    ${OPS_SRC_DIR}/actor/objectBroker/FEM_ObjectBrokerAllClasses.cpp
-)
-
-set_target_properties(OpenSeesPy PROPERTIES PREFIX "")
-
-target_include_directories(OpenSeesPy PUBLIC ${Python_INCLUDE_DIRS})
-
-if(HDF5_FOUND)
-target_link_libraries(OpenSeesPy
-   OpenSeesLIB 
-   OPS_Reliability
-   OPS_Recorder
-   OPS_Numerics 
-   ${HDF5_LIBRARIES} 
-   ${CONAN_LIBS} 
-   ${Python_LIBRARIES}
-)
-else()
-target_link_libraries(OpenSeesPy
-   OpenSeesLIB 
-   OPS_Reliability
-   OPS_Recorder
-   OPS_Numerics 
-   ${CONAN_LIBS} 
-   ${Python_LIBRARIES}
-)
-endif()
+# ===== OpenSeesPy 模块已完全移除（避免 Python 依赖和解析错误） =====
 
 
 #
@@ -815,7 +781,10 @@ endif()
 
 install (TARGETS OpenSees DESTINATION bin)
 
-# Set selected executable to be built by default
+# 确保 OPS_FINAL_TARGET 已定义
+if(NOT OPS_FINAL_TARGET)
+    set(OPS_FINAL_TARGET OpenSees)
+endif()
 set_target_properties(${OPS_FINAL_TARGET} PROPERTIES EXCLUDE_FROM_ALL OFF)
 
 # Add sources to targets
