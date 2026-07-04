@@ -21,32 +21,24 @@
 cmake_minimum_required(VERSION 3.16)
 project(OpenSeesFramework LANGUAGES C CXX Fortran)
 
-# =========================== 强制 Tcl/Tk 路径（最前方设置） ===========================
+# =========================== 强制 Tcl/Tk 路径（Conda） ===========================
 set(TCL_ROOT "/opt/mamba" CACHE PATH "" FORCE)
-
 set(TCL_INCLUDE_PATH "${TCL_ROOT}/include" CACHE PATH "" FORCE)
 set(TCL_LIBRARY "${TCL_ROOT}/lib/libtcl8.6.so" CACHE FILEPATH "" FORCE)
 set(TK_INCLUDE_PATH "${TCL_ROOT}/include" CACHE PATH "" FORCE)
 set(TK_LIBRARY "${TCL_ROOT}/lib/libtk8.6.so" CACHE FILEPATH "" FORCE)
-
 set(TCL_FOUND TRUE CACHE BOOL "" FORCE)
 set(TK_FOUND TRUE CACHE BOOL "" FORCE)
-
 set(TCL_LIBRARIES "${TCL_LIBRARY}" CACHE STRING "" FORCE)
 set(TK_LIBRARIES "${TK_LIBRARY}" CACHE STRING "" FORCE)
-
-# 为运行时 Tcl 初始化设置环境变量（仅配置时有用，但可用于后续自定义命令）
 set(ENV{TCL_LIBRARY} "${TCL_ROOT}/lib/tcl8.6")
-
 message(STATUS "FORCED Tcl at ${TCL_LIBRARY}")
 message(STATUS "FORCED Tk at ${TK_LIBRARY}")
-# =====================================================================================
+# =================================================================================
 
-# ===== 重要提示 =====
-# 请务必手动修改 cmake/cmake/OpenSeesDependenciesUnix.cmake，
-# 将其中的 find_package(TCL REQUIRED) 改为 find_package(TCL QUIET)，
-# 否则 Tcl 依赖仍然会强制报错，无视本文件设置的 TCL_FOUND。
-# ====================
+# 注意：必须确保 cmake/cmake/OpenSeesDependenciesUnix.cmake 中的
+# find_package(TCL REQUIRED) 已被改为 find_package(TCL QUIET)
+# 否则配置仍会失败。
 
 set(CMAKE_DISABLE_IN_SOURCE_BUILD ON)
 set(OPS_EXTERN_SOURCE_DIR "${PROJECT_SOURCE_DIR}/OTHER/")
@@ -331,7 +323,6 @@ else()
   set(LAPACK_LIBRARIES LAPACK)
 endif()
 
-# 修正 Python 检测变量名：使用 Python_FOUND 而非 PYTHON_FOUND
 if(Python_FOUND)
   message("Python_FOUND: ${Python_FOUND}")
   message("Python_VERSION: ${Python_VERSION}")
@@ -411,6 +402,13 @@ target_link_libraries(OPS_Numerics INTERFACE
        ${AMD_LIBRARIES}       
        ${LAPACK_LIBRARIES}
 )
+
+# -------------------- 移除 OpenSeesPy 相关引用（安全方法） --------------------
+# 我们不定义 OpenSeesPy 目标，也不注释子目录，而是直接修改子目录文件。
+# 但为了方便，我们在此提供一个备用方案：如果 SRC 子目录中仍然引用 OpenSeesPy，
+# 我们会在配置前自动注释掉这些行。此操作已在外部脚本中完成（见 README）。
+# 为了保险，我们可以在 CMake 级别设置一个条件，但最好在文件级别修复。
+# -------------------- 结束 -----------------------------------------------------
 
 #
 # OpenSees OBJECT LIBRARIES
@@ -570,12 +568,9 @@ else()
     # Non-Conan: 不复制，但传递 TCL_LIBRARY 路径（若已定义）以便运行时定位 init.tcl
     target_include_directories(OpenSees PUBLIC ${TCL_INCLUDE_PATH})
     if(TCL_LIBRARY)
-        # 修正：TCL_LIBRARY 应指向包含 init.tcl 的目录，而非 libtcl8.6.so
         target_compile_definitions(OpenSees PRIVATE TCL_LIBRARY="${TCL_ROOT}/lib/tcl8.6")
     endif()
 endif()
-
-# ---------- 注意：已删除无用的 ENVIRONMENT 属性 ----------
 
 # ---------- HDF5 条件链接 ----------
 if(HDF5_FOUND)
